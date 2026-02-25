@@ -1,0 +1,13 @@
+[package]
+name = "arbor"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Tokio-native behavior tree runtime for Arbor"
+
+[dependencies]
+arbor-core = { path = "../arbor-core" }
+tokio = { version = "1.48", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1.48", features = ["macros", "rt", "time"] }

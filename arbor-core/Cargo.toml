@@ -1,0 +1,15 @@
+[package]
+name = "arbor-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "no_std core semantics for Arbor behavior trees"
+
+[features]
+default = []
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.9"
+tokio = { version = "1.48", features = ["macros", "rt", "time"] }
