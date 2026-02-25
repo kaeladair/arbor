@@ -1,128 +1,47 @@
 # Arbor
 
-Arbor is a Rust behavior tree workspace for deterministic, async-native control logic.
+Arbor is a Rust behavior tree runtime for deterministic control logic.
+It is async-native, strongly typed, and designed for predictable tick behavior.
 
 ## Workspace
 
-- `arbor-core`: `no_std` behavior tree primitives and semantics.
-- `arbor`: Tokio-facing crate that re-exports core + `TokioClock` + `tick_until_done`.
+- `arbor-core`: `no_std` tree primitives and semantics.
+- `arbor`: Tokio-facing crate (`TokioClock`, `tick_until_done`, re-exports).
 
-## Beginner Guide
+## Behavior trees in plain language
 
-### 1) What is a behavior tree?
+A behavior tree is a decision pipeline you run every control cycle.
 
-A behavior tree is a decision tree that is **ticked** repeatedly.
+- You tick the root node.
+- The root ticks children based on node rules.
+- Each node returns a `Status`.
 
-Each node returns one of three statuses:
+`Status` has three values:
 
-- `Success`: this node finished and succeeded.
-- `Failure`: this node finished and failed.
-- `Running`: this node is still in progress.
-
-```mermaid
-flowchart LR
-    Tick["tick(node)"] --> S{"returned status"}
-    S -->|Success| A["node finished successfully"]
-    S -->|Failure| B["node finished with failure"]
-    S -->|Running| C["node not done yet; tick again later"]
-```
-
-### 2) How ticking works
-
-Every loop iteration, you tick the root node.
-Parents tick children; children return statuses; parent decides what to tick next.
-
-```mermaid
-sequenceDiagram
-    participant Control as Control Loop
-    participant Root as Root Node
-    participant C1 as Child 1
-    participant C2 as Child 2
-
-    Control->>Root: tick(ctx)
-    Root->>C1: tick(ctx)
-    C1-->>Root: Success
-    Root->>C2: tick(ctx)
-    C2-->>Root: Running
-    Root-->>Control: Running
-    Control->>Root: next tick(ctx)
-```
-
-### 3) Core node types in Arbor
-
-#### Leaf nodes
-
-- `Action`: async work, returns `Running/Success/Failure`.
-- `Condition`: checks a predicate, returns `Success/Failure`.
-- `Constant`: always returns a fixed status.
-
-#### Composite nodes
-
-- `Sequence`: run children left-to-right; fail fast; succeed only if all succeed.
-- `Selector`: run children left-to-right; succeed fast; fail only if all fail.
-- `ReactiveSequence`: like `Sequence`, but restarts from child 0 every tick.
-- `ReactiveSelector`: like `Selector`, but restarts from child 0 every tick.
-- `Parallel`: ticks all children every tick with a policy:
-  - `SuccessOnAllFailureOnAny`
-  - `SuccessOnAnyFailureOnAll`
-  - `SuccessThreshold(usize)`
-
-`Sequence` flow:
+- `Success`: completed and succeeded.
+- `Failure`: completed and failed.
+- `Running`: still in progress, tick again next cycle.
 
 ```mermaid
 flowchart TD
-    Start["Start at current child index"] --> TickChild["Tick current child"]
-    TickChild --> Result{"Child result?"}
-    Result -->|Failure| Fail["Return Failure"]
-    Result -->|Running| Run["Return Running (remember index)"]
-    Result -->|Success| More{"More children?"}
-    More -->|Yes| Next["Move to next child"] --> TickChild
-    More -->|No| Succ["Return Success"]
+    A["Control cycle starts"] --> B["Tick root"]
+    B --> C{"Root returned"}
+    C -->|Running| D["Wait for next cycle"]
+    D --> A
+    C -->|Success| E["Goal finished"]
+    C -->|Failure| F["Goal failed"]
 ```
 
-`Selector` flow:
-
-```mermaid
-flowchart TD
-    Start["Start at current child index"] --> TickChild["Tick current child"]
-    TickChild --> Result{"Child result?"}
-    Result -->|Success| Succ["Return Success"]
-    Result -->|Running| Run["Return Running (remember index)"]
-    Result -->|Failure| More{"More children?"}
-    More -->|Yes| Next["Move to next child"] --> TickChild
-    More -->|No| Fail["Return Failure"]
-```
-
-#### Decorator nodes
-
-- `Inverter`
-- `Retry`
-- `Repeat`
-- `Timeout`
-- `ForceSuccess`
-- `ForceFailure`
-
-### 4) A simple fallback tree (real Arbor API)
-
-Goal: if normal mission checks pass, execute mission; otherwise run fallback action.
-
-```mermaid
-flowchart LR
-    Root["Selector"] --> Primary["Sequence"]
-    Root --> Fallback["Action: Return Home"]
-    Primary --> C1["Condition: battery > 20"]
-    Primary --> C2["Condition: comms healthy"]
-    Primary --> A1["Action: Fly Mission"]
-```
+## Quick start
 
 ```rust
 use std::time::Duration;
 use arbor::{Action, Condition, Selector, Sequence, Status, tick_until_done};
 
-#[derive(Debug)]
+#[derive(Default)]
 struct DroneCtx {
     battery_pct: f32,
-    comms_healthy: bool,
+    comms_ok: bool,
     mission_flew: bool,
     rtl: bool,
 }
@@ -132,7 +51,7 @@ struct DroneCtx {
 let mut tree = Selector::new((
     Sequence::new((
         Condition::new(|ctx: &DroneCtx| ctx.battery_pct > 20.0),
-        Condition::new(|ctx: &DroneCtx| ctx.comms_healthy),
+        Condition::new(|ctx: &DroneCtx| ctx.comms_ok),
         Action::new(|ctx: &mut DroneCtx| async move {
             ctx.mission_flew = true;
             Status::Success
@@ -145,67 +64,300 @@ let mut tree = Selector::new((
 ));
 
 let mut ctx = DroneCtx {
-    battery_pct: 80.0,
-    comms_healthy: true,
-    mission_flew: false,
-    rtl: false,
+    battery_pct: 55.0,
+    comms_ok: true,
+    ..Default::default()
 };
 
-let status = tick_until_done(&mut tree, &mut ctx, Duration::from_millis(20)).await;
-assert_eq!(status, Status::Success);
+let result = tick_until_done(&mut tree, &mut ctx, Duration::from_millis(20)).await;
+assert_eq!(result, Status::Success);
+assert!(ctx.mission_flew);
 # }
 ```
 
-### 5) Memory vs reactive nodes (important)
+## Node types and when to use them
 
-- `Sequence` and `Selector` are **memory nodes**.
-  - If child 2 is `Running`, next tick resumes at child 2.
-- `ReactiveSequence` and `ReactiveSelector` are **reactive nodes**.
-  - Every tick starts again from child 0.
+### Leaf nodes
 
-Use reactive nodes when earlier conditions must be re-checked continuously.
+`Condition` checks state and returns `Success` or `Failure`.
 
-```mermaid
-flowchart TB
-    subgraph MemoryNodes["Sequence / Selector (memory)"]
-        M1["Tick 1: child 0 = Success, child 1 = Running"] --> M2["Tick 2: resume at child 1"]
-    end
-    subgraph ReactiveNodes["ReactiveSequence / ReactiveSelector"]
-        R1["Tick 1: child 0 = Success, child 1 = Running"] --> R2["Tick 2: restart from child 0"]
-    end
+```rust
+# use arbor::Condition;
+# struct Ctx { battery_temp_c: f32 }
+let hot = Condition::new(|ctx: &Ctx| ctx.battery_temp_c > 110.0);
 ```
 
-### 6) Building trees in Arbor
+`Action` performs work and can be async.
 
-Arbor trees are composed with Rust types and tuple children:
+```rust
+# use arbor::{Action, Status};
+# struct Ctx { warned: bool }
+let warn_user = Action::new(|ctx: &mut Ctx| async move {
+    ctx.warned = true;
+    Status::Success
+});
+```
 
-- `Sequence::new((child_a, child_b, child_c))`
-- `Selector::new((option_a, option_b))`
-- `Parallel::with_policy((a, b, c), ParallelPolicy::SuccessThreshold(2))`
+`Constant` always returns the same status.
 
-This keeps node wiring typed and allocation-free in the hot tick path.
+```rust
+# use arbor::{Constant, Status};
+let always_fail = Constant::new(Status::Failure);
+```
+
+### Composite nodes
+
+`Sequence`: "do steps in order."
+
+- Fails on first failure.
+- Returns running on first running child.
+- Succeeds only when all children succeed.
+- Remembers the running child and resumes there next tick.
+
+```mermaid
+flowchart TD
+    A["Tick child i"] --> B{"Child result"}
+    B -->|Success| C{"Last child"}
+    C -->|No| D["Move to child i+1"] --> A
+    C -->|Yes| E["Return Success"]
+    B -->|Failure| F["Return Failure"]
+    B -->|Running| G["Return Running and remember i"]
+```
+
+```rust
+# use arbor::{Action, Condition, Sequence, Status};
+# struct Ctx { armed: bool, airborne: bool }
+let takeoff = Sequence::new((
+    Condition::new(|c: &Ctx| c.armed),
+    Action::new(|c: &mut Ctx| async move {
+        c.airborne = true;
+        Status::Success
+    }),
+));
+```
+
+`Selector`: "try options in priority order."
+
+- Succeeds on first success.
+- Returns running on first running child.
+- Fails only if all children fail.
+- Remembers the running child and resumes there next tick.
+
+```mermaid
+flowchart TD
+    A["Tick child i"] --> B{"Child result"}
+    B -->|Failure| C{"Last child"}
+    C -->|No| D["Move to child i+1"] --> A
+    C -->|Yes| E["Return Failure"]
+    B -->|Success| F["Return Success"]
+    B -->|Running| G["Return Running and remember i"]
+```
+
+```rust
+# use arbor::{Action, Selector, Status};
+# struct Ctx { primary_ok: bool, fallback_used: bool }
+let pick_plan = Selector::new((
+    Action::new(|c: &mut Ctx| async move {
+        if c.primary_ok { Status::Success } else { Status::Failure }
+    }),
+    Action::new(|c: &mut Ctx| async move {
+        c.fallback_used = true;
+        Status::Success
+    }),
+));
+```
+
+`ReactiveSequence` and `ReactiveSelector` are re-checking variants.
+
+- They always restart from child 0 on every tick.
+- Use them when early conditions must be continuously revalidated.
+
+```rust
+# use arbor::{Action, Condition, ReactiveSelector, Sequence, Status};
+# struct Ctx { comms_ok: bool, rtl: bool }
+let safety = ReactiveSelector::new((
+    Sequence::new((
+        Condition::new(|c: &Ctx| !c.comms_ok),
+        Action::new(|c: &mut Ctx| async move {
+            c.rtl = true;
+            Status::Success
+        }),
+    )),
+    Action::new(|_c: &mut Ctx| async move { Status::Success }),
+));
+```
+
+`Parallel` ticks all children every tick and decides with a policy.
+
+```rust
+# use arbor::{Parallel, ParallelPolicy};
+let all_must_pass = Parallel::new((
+    arbor::Constant::new(arbor::Status::Success),
+    arbor::Constant::new(arbor::Status::Running),
+    arbor::Constant::new(arbor::Status::Failure),
+));
+let any_may_pass = Parallel::with_policy(
+    (
+        arbor::Constant::new(arbor::Status::Success),
+        arbor::Constant::new(arbor::Status::Running),
+        arbor::Constant::new(arbor::Status::Failure),
+    ),
+    ParallelPolicy::SuccessOnAnyFailureOnAll,
+);
+let two_of_three = Parallel::with_policy(
+    (
+        arbor::Constant::new(arbor::Status::Success),
+        arbor::Constant::new(arbor::Status::Running),
+        arbor::Constant::new(arbor::Status::Failure),
+    ),
+    ParallelPolicy::SuccessThreshold(2),
+);
+```
+
+### Decorator nodes
+
+Decorators wrap one child and modify its result.
+
+```rust
+# use core::time::Duration;
+# use arbor::{
+#     Action, Condition, ForceFailure, ForceSuccess, Inverter, Repeat, Retry, Status, Timeout,
+#     TokioClock,
+# };
+# struct Ctx;
+let inverter = Inverter::new(Condition::new(|_c: &Ctx| false)); // Failure -> Success
+let retry = Retry::new(Action::new(|_c: &mut Ctx| async move { Status::Failure }), 3);
+let repeat = Repeat::new(Action::new(|_c: &mut Ctx| async move { Status::Success }), 5);
+let timeout = Timeout::new(
+    Action::new(|_c: &mut Ctx| async move { Status::Running }),
+    TokioClock,
+    Duration::from_millis(200),
+);
+let force_success = ForceSuccess::new(Action::new(|_c: &mut Ctx| async move { Status::Failure }));
+let force_failure = ForceFailure::new(Action::new(|_c: &mut Ctx| async move { Status::Success }));
+```
+
+## Example scenario: drone safety rules
+
+Policy:
+
+1. If battery temperature is above 130C, kill the drone.
+2. Else if battery temperature is above 110C, warn the user.
+3. Else if the ice protection system fails, return to launch.
+4. Else if voltage is near RTL threshold, warn the user.
+5. Else, no alert this cycle.
+
+```mermaid
+flowchart TD
+    R["ReactiveSelector (top is highest priority)"]
+    R --> N1["Sequence"]
+    N1 --> C1["Condition: temp above 130C"]
+    N1 --> A1["Action: kill drone"]
+    R --> N2["Sequence"]
+    N2 --> C2["Condition: temp above 110C"]
+    N2 --> A2["Action: warn user"]
+    R --> N3["Sequence"]
+    N3 --> C3["Condition: IPS failed"]
+    N3 --> A3["Action: return to launch"]
+    R --> N4["Sequence"]
+    N4 --> C4["Condition: voltage near RTL threshold"]
+    N4 --> A4["Action: warn user"]
+    R --> A5["Action: clear alert"]
+```
+
+Why the condition and action are siblings under `Sequence`:
+
+- In a sequence, child 2 runs only if child 1 succeeded.
+- So `Condition + Action` in one sequence means "if condition is true, then do action."
+
+```rust
+use arbor::{Action, Condition, Node, ReactiveSelector, Sequence, Status};
+
+#[derive(Debug, Default)]
+struct DroneCtx {
+    battery_temp_c: f32,
+    ips_ok: bool,
+    pack_voltage_v: f32,
+    rtl_voltage_v: f32,
+    command: Command,
+    alert: Option<&'static str>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    #[default]
+    None,
+    Warn,
+    ReturnToLaunch,
+    Kill,
+}
+
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+let mut tree = ReactiveSelector::new((
+    Sequence::new((
+        Condition::new(|c: &DroneCtx| c.battery_temp_c > 130.0),
+        Action::new(|c: &mut DroneCtx| async move {
+            c.command = Command::Kill;
+            c.alert = Some("Battery temperature critical");
+            Status::Success
+        }),
+    )),
+    Sequence::new((
+        Condition::new(|c: &DroneCtx| c.battery_temp_c > 110.0),
+        Action::new(|c: &mut DroneCtx| async move {
+            c.command = Command::Warn;
+            c.alert = Some("Battery temperature high");
+            Status::Success
+        }),
+    )),
+    Sequence::new((
+        Condition::new(|c: &DroneCtx| !c.ips_ok),
+        Action::new(|c: &mut DroneCtx| async move {
+            c.command = Command::ReturnToLaunch;
+            c.alert = Some("IPS failed");
+            Status::Success
+        }),
+    )),
+    Sequence::new((
+        Condition::new(|c: &DroneCtx| c.pack_voltage_v <= c.rtl_voltage_v + 0.20),
+        Action::new(|c: &mut DroneCtx| async move {
+            c.command = Command::Warn;
+            c.alert = Some("Voltage near RTL threshold");
+            Status::Success
+        }),
+    )),
+    Action::new(|c: &mut DroneCtx| async move {
+        c.command = Command::None;
+        c.alert = None;
+        Status::Success
+    }),
+));
+
+let mut ctx = DroneCtx {
+    battery_temp_c: 112.0,
+    ips_ok: true,
+    pack_voltage_v: 15.1,
+    rtl_voltage_v: 14.9,
+    ..Default::default()
+};
+
+let _ = tree.tick(&mut ctx).await; // one control cycle
+assert_eq!(ctx.command, Command::Warn);
+# }
+```
 
 ## Running and testing
 
-Run the example:
+Run the included example:
 
 ```bash
 cargo run -p arbor --example drone_mission
 ```
 
-Run the full test suite:
+Run all tests:
 
 ```bash
 cargo fmt --all
 cargo test --workspace
 ```
-
-## What is tested
-
-`arbor-core/tests` covers:
-
-- node semantics for all leaf/composite/decorator types
-- short-circuit and memory/resume tick counts
-- reactive re-check behavior
-- timeout behavior with a mock clock
-- property-based checks for key invariants
