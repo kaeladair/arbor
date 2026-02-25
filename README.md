@@ -20,27 +20,32 @@ Each node returns one of three statuses:
 - `Running`: this node is still in progress.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Running
-    Running --> Running: tick again
-    Running --> Success
-    Running --> Failure
-    Success --> [*]
-    Failure --> [*]
+flowchart LR
+    Tick["tick(node)"] --> S{"returned status"}
+    S -->|Success| A["node finished successfully"]
+    S -->|Failure| B["node finished with failure"]
+    S -->|Running| C["node not done yet; tick again later"]
 ```
 
 ### 2) How ticking works
 
-Every loop iteration, you tick the root node. Status propagates up from children to parents.
+Every loop iteration, you tick the root node.
+Parents tick children; children return statuses; parent decides what to tick next.
 
 ```mermaid
-flowchart LR
-    Loop["Control Loop"] --> Tick["root.tick(ctx)"]
-    Tick --> Running{"Status"}
-    Running -->|Running| Sleep["wait tick interval"]
-    Sleep --> Loop
-    Running -->|Success| Done["completed"]
-    Running -->|Failure| Failed["failed"]
+sequenceDiagram
+    participant Loop as Control Loop
+    participant Root as Root Node
+    participant C1 as Child 1
+    participant C2 as Child 2
+
+    Loop->>Root: tick(ctx)
+    Root->>C1: tick(ctx)
+    C1-->>Root: Success
+    Root->>C2: tick(ctx)
+    C2-->>Root: Running
+    Root-->>Loop: Running
+    Loop->>Root: next tick(ctx)
 ```
 
 ### 3) Core node types in Arbor
@@ -61,6 +66,32 @@ flowchart LR
   - `SuccessOnAllFailureOnAny`
   - `SuccessOnAnyFailureOnAll`
   - `SuccessThreshold(usize)`
+
+`Sequence` flow:
+
+```mermaid
+flowchart TD
+    Start["Start at current child index"] --> TickChild["Tick current child"]
+    TickChild --> Result{"Child result?"}
+    Result -->|Failure| Fail["Return Failure"]
+    Result -->|Running| Run["Return Running (remember index)"]
+    Result -->|Success| More{"More children?"}
+    More -->|Yes| Next["Move to next child"] --> TickChild
+    More -->|No| Succ["Return Success"]
+```
+
+`Selector` flow:
+
+```mermaid
+flowchart TD
+    Start["Start at current child index"] --> TickChild["Tick current child"]
+    TickChild --> Result{"Child result?"}
+    Result -->|Success| Succ["Return Success"]
+    Result -->|Running| Run["Return Running (remember index)"]
+    Result -->|Failure| More{"More children?"}
+    More -->|Yes| Next["Move to next child"] --> TickChild
+    More -->|No| Fail["Return Failure"]
+```
 
 #### Decorator nodes
 
@@ -133,6 +164,16 @@ assert_eq!(status, Status::Success);
   - Every tick starts again from child 0.
 
 Use reactive nodes when earlier conditions must be re-checked continuously.
+
+```mermaid
+flowchart TB
+    subgraph MemoryNodes["Sequence / Selector (memory)"]
+        M1["Tick 1: child 0 = Success, child 1 = Running"] --> M2["Tick 2: resume at child 1"]
+    end
+    subgraph ReactiveNodes["ReactiveSequence / ReactiveSelector"]
+        R1["Tick 1: child 0 = Success, child 1 = Running"] --> R2["Tick 2: restart from child 0"]
+    end
+```
 
 ### 6) Building trees in Arbor
 
