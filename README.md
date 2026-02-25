@@ -34,18 +34,18 @@ Parents tick children; children return statuses; parent decides what to tick nex
 
 ```mermaid
 sequenceDiagram
-    participant Loop as Control Loop
+    participant Control as Control Loop
     participant Root as Root Node
     participant C1 as Child 1
     participant C2 as Child 2
 
-    Loop->>Root: tick(ctx)
+    Control->>Root: tick(ctx)
     Root->>C1: tick(ctx)
     C1-->>Root: Success
     Root->>C2: tick(ctx)
     C2-->>Root: Running
-    Root-->>Loop: Running
-    Loop->>Root: next tick(ctx)
+    Root-->>Control: Running
+    Control->>Root: next tick(ctx)
 ```
 
 ### 3) Core node types in Arbor
