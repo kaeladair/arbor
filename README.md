@@ -1,112 +1,170 @@
-# arbor
+# Arbor
 
-A minimal, deterministic, async-native behavior tree runtime in Rust, split into:
+Arbor is a Rust behavior tree workspace for deterministic, async-native control logic.
 
-- `arbor-core`: `no_std` core semantics and node implementations.
-- `arbor`: tokio-facing crate that re-exports core and adds runtime helpers.
+## Workspace
 
-The implementation follows *Behavior Trees in Robotics and AI* (M. Colledanchise, P. Ogren) as the semantic source of truth.
+- `arbor-core`: `no_std` behavior tree primitives and semantics.
+- `arbor`: Tokio-facing crate that re-exports core + `TokioClock` + `tick_until_done`.
 
-## Crates
+## Beginner Guide
 
-- `/arbor-core`
-  - `Status` (`Success`, `Failure`, `Running`)
-  - Typed `Node<Ctx>` trait (`Ctx` is the user blackboard/context)
-  - Leaf, composite, and decorator nodes
-  - `Clock` abstraction for timeout semantics
-  - No allocations in the tick hot path
-- `/arbor`
-  - Re-exports all core types
-  - `TokioClock`
-  - `tick_until_done(...)`
-  - `examples/drone_mission.rs`
+### 1) What is a behavior tree?
 
-## Quick Start
+A behavior tree is a decision tree that is **ticked** repeatedly.
+
+Each node returns one of three statuses:
+
+- `Success`: this node finished and succeeded.
+- `Failure`: this node finished and failed.
+- `Running`: this node is still in progress.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running
+    Running --> Running: tick again
+    Running --> Success
+    Running --> Failure
+    Success --> [*]
+    Failure --> [*]
+```
+
+### 2) How ticking works
+
+Every loop iteration, you tick the root node. Status propagates up from children to parents.
+
+```mermaid
+flowchart LR
+    Loop["Control Loop"] --> Tick["root.tick(ctx)"]
+    Tick --> Running{"Status"}
+    Running -->|Running| Sleep["wait tick interval"]
+    Sleep --> Loop
+    Running -->|Success| Done["completed"]
+    Running -->|Failure| Failed["failed"]
+```
+
+### 3) Core node types in Arbor
+
+#### Leaf nodes
+
+- `Action`: async work, returns `Running/Success/Failure`.
+- `Condition`: checks a predicate, returns `Success/Failure`.
+- `Constant`: always returns a fixed status.
+
+#### Composite nodes
+
+- `Sequence`: run children left-to-right; fail fast; succeed only if all succeed.
+- `Selector`: run children left-to-right; succeed fast; fail only if all fail.
+- `ReactiveSequence`: like `Sequence`, but restarts from child 0 every tick.
+- `ReactiveSelector`: like `Selector`, but restarts from child 0 every tick.
+- `Parallel`: ticks all children every tick with a policy:
+  - `SuccessOnAllFailureOnAny`
+  - `SuccessOnAnyFailureOnAll`
+  - `SuccessThreshold(usize)`
+
+#### Decorator nodes
+
+- `Inverter`
+- `Retry`
+- `Repeat`
+- `Timeout`
+- `ForceSuccess`
+- `ForceFailure`
+
+### 4) A simple fallback tree (real Arbor API)
+
+Goal: if normal mission checks pass, execute mission; otherwise run fallback action.
+
+```mermaid
+flowchart LR
+    Root["Selector"] --> Primary["Sequence"]
+    Root --> Fallback["Action: Return Home"]
+    Primary --> C1["Condition: battery > 20"]
+    Primary --> C2["Condition: comms healthy"]
+    Primary --> A1["Action: Fly Mission"]
+```
 
 ```rust
 use std::time::Duration;
-use arbor::{Condition, Selector, Sequence, Status, tick_until_done};
+use arbor::{Action, Condition, Selector, Sequence, Status, tick_until_done};
 
-#[derive(Default)]
-struct Ctx {
+#[derive(Debug)]
+struct DroneCtx {
     battery_pct: f32,
     comms_healthy: bool,
-}
-
-#[derive(Default)]
-struct DoWork;
-
-impl arbor::Node<Ctx> for DoWork {
-    async fn tick(&mut self, _ctx: &mut Ctx) -> Status {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        Status::Success
-    }
+    mission_flew: bool,
+    rtl: bool,
 }
 
 # #[tokio::main(flavor = "current_thread")]
 # async fn main() {
 let mut tree = Selector::new((
     Sequence::new((
-        Condition::new(|ctx: &Ctx| ctx.battery_pct > 20.0),
-        Condition::new(|ctx: &Ctx| ctx.comms_healthy),
-        DoWork::default(),
+        Condition::new(|ctx: &DroneCtx| ctx.battery_pct > 20.0),
+        Condition::new(|ctx: &DroneCtx| ctx.comms_healthy),
+        Action::new(|ctx: &mut DroneCtx| async move {
+            ctx.mission_flew = true;
+            Status::Success
+        }),
     )),
-    DoWork::default(),
+    Action::new(|ctx: &mut DroneCtx| async move {
+        ctx.rtl = true;
+        Status::Success
+    }),
 ));
 
-let mut ctx = Ctx { battery_pct: 80.0, comms_healthy: true };
+let mut ctx = DroneCtx {
+    battery_pct: 80.0,
+    comms_healthy: true,
+    mission_flew: false,
+    rtl: false,
+};
+
 let status = tick_until_done(&mut tree, &mut ctx, Duration::from_millis(20)).await;
 assert_eq!(status, Status::Success);
 # }
 ```
 
-## Semantics Summary
+### 5) Memory vs reactive nodes (important)
 
-- `Sequence` and `Selector` are memory control-flow nodes.
-  - They resume from the last `Running` child.
-  - Memory is cleared on terminal return (`Success`/`Failure`).
-- `ReactiveSequence` and `ReactiveSelector` are memory-less control-flow nodes.
-  - They restart from child index `0` each tick.
-- `Parallel` ticks all children every tick and applies policy thresholds.
-- `Condition` never returns `Running`.
-- `Action` may return all three statuses.
-- Decorators preserve/transform child status exactly according to their rule.
+- `Sequence` and `Selector` are **memory nodes**.
+  - If child 2 is `Running`, next tick resumes at child 2.
+- `ReactiveSequence` and `ReactiveSelector` are **reactive nodes**.
+  - Every tick starts again from child 0.
 
-## Book Mapping Table
+Use reactive nodes when earlier conditions must be re-checked continuously.
 
-| Book definition | Crate type | Notes |
-|---|---|---|
-| Ch. 1.3, Algorithm 1 (Sequence) | `Sequence` | Left-to-right, stop on first `Failure`/`Running`, succeed only if all succeed |
-| Ch. 1.3, Algorithm 2 (Fallback/Selector) | `Selector` | Left-to-right, stop on first `Success`/`Running`, fail only if all fail |
-| Ch. 1.3, Algorithm 3 (Parallel with threshold `M`) | `Parallel` + `ParallelPolicy` | `Success` if successes `>= M`; `Failure` if failures `> N-M`; otherwise `Running` |
-| Ch. 1.3, Action definition | `Action` or custom `Node` leaf | Async execution allowed; may return `Running`/`Success`/`Failure` |
-| Ch. 1.3, Condition definition | `Condition` | Returns `Success`/`Failure` only |
-| Ch. 1.3, decorator examples (invert, max-N-tries, max-Tsec) | `Inverter`, `Retry`, `Timeout` | Direct decorator mappings |
-| Ch. 1.3.2, control-flow nodes with memory | `Sequence`, `Selector` | Resume from running child and clear memory on terminal return |
-| Ch. 1.3 + Ch. 3.6, memory-less reactive ticking behavior | `ReactiveSequence`, `ReactiveSelector` | Re-evaluate from first child every tick |
-| Ch. 1.3 decorator status forcing patterns | `ForceSuccess`, `ForceFailure`, `Repeat` | Status override and bounded repetition policies |
+### 6) Building trees in Arbor
 
-## Tests
+Arbor trees are composed with Rust types and tuple children:
 
-`arbor-core/tests` includes:
+- `Sequence::new((child_a, child_b, child_c))`
+- `Selector::new((option_a, option_b))`
+- `Parallel::with_policy((a, b, c), ParallelPolicy::SuccessThreshold(2))`
 
-- Formal correctness tests for each required node type and semantics rule.
-- Tick-count assertions for short-circuit and memory/resume behavior.
-- Property-based tests (proptest) over randomized status configurations and random structure templates.
-- Nested composition tests (3+ levels).
-- Timeout tests using a mock clock.
+This keeps node wiring typed and allocation-free in the hot tick path.
 
-Run all checks:
+## Running and testing
+
+Run the example:
+
+```bash
+cargo run -p arbor --example drone_mission
+```
+
+Run the full test suite:
 
 ```bash
 cargo fmt --all
 cargo test --workspace
 ```
 
-## Example
+## What is tested
 
-Run the drone simulation:
+`arbor-core/tests` covers:
 
-```bash
-cargo run -p arbor --example drone_mission
-```
+- node semantics for all leaf/composite/decorator types
+- short-circuit and memory/resume tick counts
+- reactive re-check behavior
+- timeout behavior with a mock clock
+- property-based checks for key invariants
