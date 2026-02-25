@@ -1,0 +1,51 @@
+name: Nightly Stress
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  property_stress:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      PROPTEST_CASES: "2000"
+      PROPTEST_RNG_SEED: "424242"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Property stress tests
+        run: cargo test -p arbor-core --test property -- --nocapture
+
+      - name: Differential stress tests
+        run: cargo test -p arbor-core --test differential -- --nocapture
+
+  miri_optional:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nightly toolchain + miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Setup miri
+        run: cargo +nightly miri setup
+
+      - name: Miri smoke run (optional)
+        run: >-
+          cargo +nightly miri test
+          -p arbor-core
+          --test differential
+          differential_smoke_deterministic
+          -- --exact

@@ -1,0 +1,75 @@
+name: PR Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      PROPTEST_CASES: "128"
+      PROPTEST_RNG_SEED: "424242"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: thumbv7em-none-eabihf
+
+      - name: Install nightly toolchain for branch coverage
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Format
+        run: cargo +stable fmt --all -- --check
+
+      - name: Clippy
+        run: cargo +stable clippy --workspace --all-targets -- -D warnings
+
+      - name: Workspace tests
+        run: cargo +stable test --workspace
+
+      - name: Conformance suite
+        run: cargo +stable test -p arbor-core --test conformance_btcpp
+
+      - name: no_std compile check
+        run: cargo +stable check -p arbor-core --target thumbv7em-none-eabihf --no-default-features
+
+      - name: Coverage gate (arbor-core >= 90 line / 85 branch)
+        run: |
+          set -euo pipefail
+
+          summary="$(cargo +nightly llvm-cov --package arbor-core --tests --summary-only --branch --fail-under-lines 90)"
+          echo "$summary"
+
+          branch_cov="$(echo "$summary" | awk '/^TOTAL/{print $(NF)}' | tr -d '%')"
+          python3 - <<'PY' "$branch_cov"
+import sys
+branch = float(sys.argv[1])
+if branch < 85.0:
+    raise SystemExit(f"branch coverage gate failed: {branch:.2f}% < 85.00%")
+print(f"branch coverage gate passed: {branch:.2f}%")
+PY
+
+          cargo +nightly llvm-cov \
+            --package arbor-core \
+            --tests \
+            --lcov \
+            --output-path arbor-core.lcov \
+            --fail-under-lines 90
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arbor-core-lcov
+          path: arbor-core.lcov

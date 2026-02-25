@@ -85,11 +85,11 @@ proptest! {
             Status::Success,
         ];
 
-        for index in 0..4 {
+        for (index, leaf) in leaves.iter_mut().enumerate() {
             if index < fail_index {
-                leaves[index] = Status::Success;
+                *leaf = Status::Success;
             } else if index == fail_index {
-                leaves[index] = Status::Failure;
+                *leaf = Status::Failure;
             }
         }
 
@@ -107,6 +107,46 @@ proptest! {
 
         for index in 0..4 {
             let expected = if index <= fail_index { 1 } else { 0 };
+            prop_assert_eq!(ctx.ticks[index], expected);
+        }
+    }
+
+    #[test]
+    fn selector_short_circuits_tick_counts_after_first_success(
+        success_index in 0usize..4,
+        leading_a in any::<bool>(),
+        leading_b in any::<bool>(),
+        leading_c in any::<bool>(),
+    ) {
+        let mut leaves = [
+            status_from_bool(leading_a),
+            status_from_bool(leading_b),
+            status_from_bool(leading_c),
+            Status::Failure,
+        ];
+
+        for (index, leaf) in leaves.iter_mut().enumerate() {
+            if index < success_index {
+                *leaf = Status::Failure;
+            } else if index == success_index {
+                *leaf = Status::Success;
+            }
+        }
+
+        let mut tree = Selector::new((
+            ScriptedLeaf::new(0, vec![leaves[0]]),
+            ScriptedLeaf::new(1, vec![leaves[1]]),
+            ScriptedLeaf::new(2, vec![leaves[2]]),
+            ScriptedLeaf::new(3, vec![leaves[3]]),
+        ));
+        let mut ctx = TickCtx::new(4);
+
+        let status = block_on(async { tree.tick(&mut ctx).await });
+
+        prop_assert_eq!(status, Status::Success);
+
+        for index in 0..4 {
+            let expected = if index <= success_index { 1 } else { 0 };
             prop_assert_eq!(ctx.ticks[index], expected);
         }
     }
