@@ -54,12 +54,12 @@ jobs:
 
           branch_cov="$(echo "$summary" | awk '/^TOTAL/{print $(NF)}' | tr -d '%')"
           python3 - <<'PY' "$branch_cov"
-import sys
-branch = float(sys.argv[1])
-if branch < 85.0:
-    raise SystemExit(f"branch coverage gate failed: {branch:.2f}% < 85.00%")
-print(f"branch coverage gate passed: {branch:.2f}%")
-PY
+          import sys
+          branch = float(sys.argv[1])
+          if branch < 85.0:
+              raise SystemExit(f"branch coverage gate failed: {branch:.2f}% < 85.00%")
+          print(f"branch coverage gate passed: {branch:.2f}%")
+          PY
 
           cargo +nightly llvm-cov \
             --package arbor-core \
