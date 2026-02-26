@@ -10,4 +10,4 @@ arbor-core = { path = "../arbor-core" }
 tokio = { version = "1.48", features = ["time"] }
 
 [dev-dependencies]
-tokio = { version = "1.48", features = ["macros", "rt", "time"] }
+tokio = { version = "1.48", features = ["macros", "rt", "time", "test-util", "sync"] }

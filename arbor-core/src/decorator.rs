@@ -182,12 +182,12 @@ where
     Clk: Clock,
 {
     async fn tick(&mut self, ctx: &mut Ctx) -> Status {
-        if let Some(started_at) = self.started_at {
-            if self.clock.elapsed(started_at) >= self.duration {
-                self.started_at = None;
-                self.child.reset();
-                return Status::Failure;
-            }
+        if let Some(started_at) = self.started_at
+            && self.clock.elapsed(started_at) >= self.duration
+        {
+            self.started_at = None;
+            self.child.reset();
+            return Status::Failure;
         }
 
         match self.child.tick(ctx).await {

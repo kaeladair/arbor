@@ -198,17 +198,12 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParallelPolicy {
+    #[default]
     SuccessOnAllFailureOnAny,
     SuccessOnAnyFailureOnAll,
     SuccessThreshold(usize),
-}
-
-impl Default for ParallelPolicy {
-    fn default() -> Self {
-        Self::SuccessOnAllFailureOnAny
-    }
 }
 
 pub struct Parallel<Children> {
